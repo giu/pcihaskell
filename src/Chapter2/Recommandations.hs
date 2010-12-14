@@ -1,8 +1,11 @@
 -- |This module implements functions for calculating a similarity score which are mentioned in the Chapter 2 of 'Programming Collective Intelligence'
-module Recommendation 
-        ( getEuclideanScores
-        , getPearsonScores
-        , getJaccardScores
+module Recommendations 
+        ( getAllUsersScores
+        , getUserScores
+        , scoreEuclidean
+        , scorePearson
+        , scoreJaccard
+        , getSampleUsers
         ) where
 
 import Data.List
@@ -37,9 +40,15 @@ getMutuallyRatings u1 u2    = foldl (\acc x -> case find (\y -> getItemName y ==
                                                                                                 Nothing -> acc) [] (getItemRatings u2)
 
 -- |Generates a list of users with the according similarity score. The latter is calculated using a score function
-generateSimilaritiesList :: [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
-generateSimilaritiesList [] _ = []
-generateSimilaritiesList (x:xs) scoreFunc = foldl (\acc cur -> (getName x, getName cur, scoreFunc x cur) : acc) [] (xs) ++ generateSimilaritiesList xs scoreFunc
+generateAllUsersScoreList :: [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
+generateAllUsersScoreList [] _ = []
+generateAllUsersScoreList (x:xs) scoreFunc = foldl (\acc cur -> (getName x, getName cur, scoreFunc x cur) : acc) [] (xs) ++ generateAllUsersScoreList xs scoreFunc
+
+-- |Generates a list with scores by using a specific score function between a specified user and all the other users
+generateUserScoreList :: UserName -> [User] -> (User -> User -> t) -> [(UserName, UserName, t)]
+generateUserScoreList userName ratings scoreFunc =  case find (\cur -> getName cur == userName) ratings of -- check if a user with the specified username exists
+                                                        Just user -> foldl (\acc cur -> if(userName == getName cur) then acc else (userName, getName cur, scoreFunc user cur) : acc) [] ratings
+                                                        Nothing -> []
 
 -- |Score function that calculates the similarity score between two users by using the Euclidean distance
 scoreEuclidean :: User -> User -> Double
@@ -69,24 +78,16 @@ sortDesc (_,_,x) (_,_,y)    |   x > y = LT
                             |   otherwise = EQ
 
 -- |Generates a list with the similarity scores between all users
-getScores :: (User -> User -> Double) -> [(UserName, UserName, Double)]
-getScores scoreFunc = sortBy sortDesc (generateSimilaritiesList critics scoreFunc)
+getAllUsersScores :: [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
+getAllUsersScores users scoreFunc = sortBy sortDesc (generateAllUsersScoreList users scoreFunc)
 
--- |Generates a list with the similarity scores between all users by using the Euclidean distance
-getEuclideanScores :: [(UserName, UserName, Double)]
-getEuclideanScores = getScores scoreEuclidean
+-- |Generates a list with the similarity scores between the user with the specified username and all the other users
+getUserScores :: UserName -> [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
+getUserScores userName users scoreFunc = sortBy sortDesc (generateUserScoreList userName users scoreFunc)
 
--- |Generates a list with the similarity scores between all users by using the Pearson product-moment correlation coefficient 
-getPearsonScores :: [(UserName, UserName, Double)]
-getPearsonScores = getScores scorePearson
-
--- |Generates a list with the similarity scores between all users by using the Jaccard coefficient
-getJaccardScores :: [(UserName, UserName, Double)]
-getJaccardScores = getScores scoreJaccard
-
-
--- |Sample list of users and the appertaining movie ratings
-critics = 
+-- |Sample list of users and the appertaining item ratings
+getSampleUsers :: [User]
+getSampleUsers = 
                 [
                     User "Lisa Rose" [
                         ItemRating "Lady in the Water" 2.5,
