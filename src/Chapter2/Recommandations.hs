@@ -1,147 +1,143 @@
--- |This module implements functions for calculating a similarity score which are mentioned in the Chapter 2 of 'Programming Collective Intelligence'
+-- |This module implements functions for calculating similarity scores
 module Recommendations 
-        ( getAllUsersScores
-        , getUserScores
+        ( generateCompleteScoreList
+        , generateSpecificElementScoreList
         , scoreEuclidean
         , scorePearson
         , scoreJaccard
-        , getSampleUsers
+        , getSampleElements
         ) where
 
+import qualified Data.Map as M
 import Data.List
-import Data.Function
 
-type UserName   =   String
-type ItemName   =   String
-type Rating     =   Double
-
-data User       =   User {
-                        getName :: UserName,
-                        getItemRatings :: [ItemRating]
-                    } deriving (Show)
-
-data ItemRating =   ItemRating {
-                        getItemName :: ItemName,
-                        getRating :: Rating
-                    } deriving (Show)
-
+-- |Algebraic data type representing a collection of various sums, that are needed by the score function that uses the Pearson coefficient. 
+-- This type is used in the score function to calculate all the sums in one "loop" instead of a separate "loop" for each sum.
 data Sums       =   Sums {
-                        getSum1 :: Double,
-                        getSum2 :: Double,
-                        getSqrSum1 :: Double,
-                        getSqrSum2 :: Double,
-                        getProdSum :: Double
+                        sum1 :: Double,
+                        sum2 :: Double,
+                        sqrSum1 :: Double,
+                        sqrSum2 :: Double,
+                        prodSum :: Double
                     } deriving (Show)
 
--- |Returns the ratings of all the mutually rated movies of User1 (u1) and User2 (u2)
-getMutuallyRatings :: User -> User -> [(Rating, Rating)]
-getMutuallyRatings u1 u2    = foldl (\acc x -> case find (\y -> getItemName y == getItemName x) (getItemRatings u1) of 
-                                                                                                Just t -> (getRating t, getRating x) : acc 
-                                                                                                Nothing -> acc) [] (getItemRatings u2)
+-- |Algebraic data type representing two element names
+data NamePair   =   NamePair {
+                        name1 :: String,
+                        name2 :: String
+                    }
 
--- |Generates a list of users with the according similarity score. The latter is calculated using a score function
-generateAllUsersScoreList :: [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
-generateAllUsersScoreList [] _ = []
-generateAllUsersScoreList (x:xs) scoreFunc = foldl (\acc cur -> (getName x, getName cur, scoreFunc x cur) : acc) [] (xs) ++ generateAllUsersScoreList xs scoreFunc
+instance Eq NamePair where
+    x == y = (name1 x == name1 y) && (name2 x == name2 y)
 
--- |Generates a list with scores by using a specific score function between a specified user and all the other users
-generateUserScoreList :: UserName -> [User] -> (User -> User -> t) -> [(UserName, UserName, t)]
-generateUserScoreList userName ratings scoreFunc =  case find (\cur -> getName cur == userName) ratings of -- check if a user with the specified username exists
-                                                        Just user -> foldl (\acc cur -> if(userName == getName cur) then acc else (userName, getName cur, scoreFunc user cur) : acc) [] ratings
-                                                        Nothing -> []
+instance Ord NamePair where
+    compare x y =   if x == y then EQ
+                    else if name1 x <= name1 y then LT
+                    else GT
 
--- |Score function that calculates the similarity score between two users by using the Euclidean distance
-scoreEuclidean :: User -> User -> Double
-scoreEuclidean u1 u2  = 1 / (1 + sqrt (sum[(x-y)^2 | (x,y) <- (getMutuallyRatings u1 u2)]))
+instance Show NamePair where
+    show np = "Name #1: " ++ name1 np ++ ", Name #2: " ++ name2 np
 
--- |Score function that calculates the similarity score between two users by using the Pearson product-moment correlation coefficient 
-scorePearson :: User -> User -> Double
-scorePearson u1 u2      =   if den == 0 
+-- |Transforms the dataset in a way that it can either be used for user-based filtering (similarity between users) or for item-based filtering (similarity between items)
+transform :: M.Map String (M.Map String Double) -> M.Map String (M.Map String Double)
+transform elmnts =  foldr (\(itmName, elmName, rating) -> M.insertWith (\newVal oldVal -> M.union newVal oldVal) itmName (M.fromList [(elmName, rating)])) itemsUnique reversedList -- transform the dataset
+                    where   itemsUnique = foldr (\currMp acc -> M.union acc (M.fromList [(obj, M.empty) | obj <- M.keys currMp])) M.empty (M.elems elmnts) -- get a map of all the objects in the dataset
+                            reversedList = foldr (\(elmName, objList) acc -> [(itmName,elmName,rating) | (itmName, rating) <- M.toList objList] ++ acc) [] (M.toList elmnts) -- flatten the map
+                                
+
+-- |Generates a map with all the ratings both parties share
+getMutuallyRatings :: M.Map String Double -> M.Map String Double -> M.Map String (Double, Double)
+getMutuallyRatings xs ys    =   M.intersectionWithKey getItemRatings xs ys
+                                where getItemRatings k rx ry = (rx,ry)
+
+-- |Score function that calculates the similarity score by using the Euclidean distance
+scoreEuclidean :: M.Map String Double -> M.Map String Double -> Double
+scoreEuclidean xs ys  =   1 / (1 + sqrt (ratingsSum))
+                        where ratingsSum = M.fold (\(a,b) acc -> (+) acc $ (a-b)^2) 0 $ getMutuallyRatings xs ys
+
+-- |Score function that calculates the similarity score by using the Jaccard coefficient
+scoreJaccard :: M.Map String Double -> M.Map String Double -> Double
+scoreJaccard xs ys =    inters / unio
+                        where   inters = (fromIntegral . M.size) $ getMutuallyRatings xs ys
+                                uni =   if M.size xs > M.size ys then M.union xs ys -- From the Data.Map documentation: 'Hedge-union is more efficient on (bigset `union` smallset).' So, lets make it more efficient
+                                        else M.union ys xs
+                                unio = (fromIntegral . M.size) $ uni
+
+-- |Score function that calculates the similarity score by using the Pearson product-moment correlation coefficient 
+scorePearson :: M.Map String Double -> M.Map String Double -> Double
+scorePearson x y =   if den == 0 
                                 then 0
-                                else (((getProdSum sums) - ((getSum1 sums) * (getSum2 sums) / n)) / den)
-                            where   sums    = foldl (\sms (x,y) -> Sums (getSum1 sms + x) (getSum2 sms + y) (getSqrSum1 sms + (x^2)) (getSqrSum2 sms + (y^2)) (getProdSum sms + (x*y))) (Sums 0 0 0 0 0) ratings
-                                    n       = fromIntegral (length ratings)
-                                    ratings = getMutuallyRatings u1 u2
-                                    cal     = ((getSqrSum1 sums) - ((getSum1 sums)^2) / n) * ((getSqrSum2 sums) - ((getSum2 sums)^2) / n)
-                                    den     = if (cal >= 0) then sqrt cal else 0
+                                else (((prodSum sums) - ((sum1 sums) * (sum2 sums) / n)) / den)
+                    where   sums    = M.fold (\(a,b) sms -> Sums (sum1 sms + a) (sum2 sms + b) (sqrSum1 sms + (a^2)) (sqrSum2 sms + (b^2)) (prodSum sms + (a*b))) (Sums 0 0 0 0 0) ratings
+                            n       = (fromIntegral . M.size) ratings
+                            ratings = getMutuallyRatings x y
+                            cal     = ((sqrSum1 sums) - ((sum1 sums)^2) / n) * ((sqrSum2 sums) - ((sum2 sums)^2) / n)
+                            den     = if cal >= 0 then sqrt cal else 0
 
--- |Score function that calculates the similarity score between two users by using the Jaccard coefficient
-scoreJaccard :: User -> User -> Double
-scoreJaccard u1 u2 =    inters / unio
-                        where   inters = (fromIntegral . length) $ getMutuallyRatings u1 u2
-                                unio = (fromIntegral . length)  $ unionBy (\a b -> (getItemName a) == (getItemName b)) (getItemRatings u1) (getItemRatings u2)
+-- |Generates a list with the calculated similarity score between each elements (cartesian product). The similarity score is calculated using a defined score function
+generateCompleteScoreList :: M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map NamePair Double
+generateCompleteScoreList  elmnts scoreFunc =    M.fromList [(NamePair x y, scoreFunc xis yis) | (x,xis) <- lst, (y,yis) <- lst]
+                                                    where lst = M.toList elmnts
+-- |Generates a list with the calculated similarity score between the element with the specified name and all others. The similarity score is calculated using a defined score function
+generateSpecificElementScoreList :: String -> M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map NamePair Double
+generateSpecificElementScoreList name elmnts scoreFunc =  case M.lookup name elmnts of
+                                                            Just itms -> M.fromList [(NamePair name x, scoreFunc itms xis) | (x,xis) <- M.toList elmnts, x /= name]
+                                                            Nothing -> M.empty
 
--- |Reverses the sort order
-sortDesc :: (Ord c) => (a, b, c) -> (d, e, c) -> Ordering
-sortDesc (_,_,x) (_,_,y)    |   x > y = LT
-                            |   x < y = GT
-                            |   otherwise = EQ
+getSampleElements = M.fromList [
+                        ("Lisa Rose", M.fromList [
+                            ("Lady in the Water",2.5),
+                            ("Snakes on a Plane",3.5),
+                            ("Just My Luck",3),
+                            ("Superman Returns",3.5),
+                            ("You, Me and Dupree",2.5),
+                            ("The Night Listener",3)
+                        ]),
 
--- |Generates a list with the similarity scores between all users
-getAllUsersScores :: [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
-getAllUsersScores users scoreFunc = sortBy sortDesc (generateAllUsersScoreList users scoreFunc)
+                        ("Gene Seymour", M.fromList [
+                            ("Lady in the Water",3),
+                            ("Snakes on a Plane",3.5),
+                            ("Just My Luck",1.5),
+                            ("Superman Returns",5),
+                            ("You, Me and Dupree",3.5),
+                            ("The Night Listener",3)
+                        ]),
 
--- |Generates a list with the similarity scores between the user with the specified username and all the other users
-getUserScores :: UserName -> [User] -> (User -> User -> Double) -> [(UserName, UserName, Double)]
-getUserScores userName users scoreFunc = sortBy sortDesc (generateUserScoreList userName users scoreFunc)
+                        ("Michael Phillips", M.fromList [
+                            ("Lady in the Water",2.5),
+                            ("Snakes on a Plane",3),
+                            ("Superman Returns",3.5),
+                            ("The Night Listener",4)
+                        ]),
+     
+                        ("Claudia Puig", M.fromList [
+                            ("Snakes on a Plane",3.5),
+                            ("Just My Luck",3),
+                            ("Superman Returns",4),
+                            ("You, Me and Dupree",2.5),
+                            ("The Night Listener",4.5)
+                        ]),
 
--- |Sample list of users and the appertaining item ratings
-getSampleUsers :: [User]
-getSampleUsers = 
-                [
-                    User "Lisa Rose" [
-                        ItemRating "Lady in the Water" 2.5,
-                        ItemRating "Snakes on a Plane" 3.5,
-                        ItemRating "Just My Luck" 3,
-                        ItemRating "Superman Returns" 3.5,
-                        ItemRating "You, Me and Dupree" 2.5,
-                        ItemRating "The Night Listener" 3
-                    ],
+                        ("Mick LaSalle", M.fromList [
+                            ("Lady in the Water",3),
+                            ("Snakes on a Plane",4),
+                            ("Just My Luck",2),
+                            ("Superman Returns",3),
+                            ("You, Me and Dupree",2),
+                            ("The Night Listener",3)
+                        ]),
 
-                    User "Gene Seymour" [
-                        ItemRating "Lady in the Water" 3,
-                        ItemRating "Snakes on a Plane" 3.5,
-                        ItemRating "Just My Luck" 1.5,
-                        ItemRating "Superman Returns" 5,
-                        ItemRating "You, Me and Dupree" 3.5,
-                        ItemRating "The Night Listener" 3
-                    ],
+                        ("Jack Matthews", M.fromList [
+                            ("Lady in the Water",3),
+                            ("Snakes on a Plane",4),
+                            ("Superman Returns",5),
+                            ("You, Me and Dupree",3.5),
+                            ("The Night Listener",3)
+                        ]),
 
-                    User "Michael Phillips" [
-                        ItemRating "Lady in the Water" 2.5,
-                        ItemRating "Snakes on a Plane" 3,
-                        ItemRating "Superman Returns" 3.5,
-                        ItemRating "The Night Listener" 4
-                    ],
-
-                    User "Claudia Puig" [
-                        ItemRating "Snakes on a Plane" 3.5,
-                        ItemRating "Just My Luck" 3,
-                        ItemRating "Superman Returns" 4,
-                        ItemRating "You, Me and Dupree" 2.5,
-                        ItemRating "The Night Listener" 4.5
-                    ],
-
-                    User "Mick LaSalle" [
-                        ItemRating "Lady in the Water" 3,
-                        ItemRating "Snakes on a Plane" 4,
-                        ItemRating "Just My Luck" 2,
-                        ItemRating "Superman Returns" 3,
-                        ItemRating "You, Me and Dupree" 2,
-                        ItemRating "The Night Listener" 3
-                    ],
-
-                    User "Jack Matthews" [
-                        ItemRating "Lady in the Water" 3,
-                        ItemRating "Snakes on a Plane" 4,
-                        ItemRating "Superman Returns" 5,
-                        ItemRating "You, Me and Dupree" 3.5,
-                        ItemRating "The Night Listener" 3
-                    ],
-
-                    User "Toby" [
-                        ItemRating "Snakes on a Plane" 4.5,
-                        ItemRating "Superman Returns" 4,
-                        ItemRating "You, Me and Dupree" 1
+                        ("Toby", M.fromList [
+                            ("Snakes on a Plane",4.5),
+                            ("Superman Returns",4),
+                            ("You, Me and Dupree",1)
+                        ])
                     ]
-                ]
