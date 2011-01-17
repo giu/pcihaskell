@@ -9,10 +9,10 @@ module Recommendations
         ) where
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.List
 
 -- |Algebraic data type representing a collection of various sums, that are needed by the score function that uses the Pearson coefficient. 
--- This type is used in the score function to calculate all the sums in one "loop" instead of a separate "loop" for each sum.
 data Sums       =   Sums {
                         sum1 :: Double,
                         sum2 :: Double,
@@ -21,22 +21,16 @@ data Sums       =   Sums {
                         prodSum :: Double
                     } deriving (Show)
 
--- |Algebraic data type representing two element names
 data NamePair   =   NamePair {
                         name1 :: String,
                         name2 :: String
                     }
 
 instance Eq NamePair where
-    x == y = (name1 x == name1 y) && (name2 x == name2 y)
-
-instance Ord NamePair where
-    compare x y =   if x == y then EQ
-                    else if name1 x <= name1 y then LT
-                    else GT
+    (NamePair xn1 xn2) == (NamePair yn1 yn2)  = ((xn1,xn2) == (yn1,yn2)) || ((xn1,xn2) == (yn2,yn1))
 
 instance Show NamePair where
-    show np = "Name #1: " ++ name1 np ++ ", Name #2: " ++ name2 np
+    show np = "<" ++ name1 np ++ " / " ++ name2 np ++ ">"
 
 -- |Transforms the dataset in a way that it can either be used for user-based filtering (similarity between users) or for item-based filtering (similarity between items)
 transform :: M.Map String (M.Map String Double) -> M.Map String (M.Map String Double)
@@ -65,24 +59,26 @@ scoreJaccard xs ys =    inters / unio
 
 -- |Score function that calculates the similarity score by using the Pearson product-moment correlation coefficient 
 scorePearson :: M.Map String Double -> M.Map String Double -> Double
-scorePearson x y =   if den == 0 
-                                then 0
-                                else (((prodSum sums) - ((sum1 sums) * (sum2 sums) / n)) / den)
+scorePearson x y =  if den == 0 
+                        then 0
+                        else (((prodSum sums) - ((sum1 sums) * (sum2 sums) / n)) / den)
+
                     where   sums    = M.fold (\(a,b) sms -> Sums (sum1 sms + a) (sum2 sms + b) (sqrSum1 sms + (a^2)) (sqrSum2 sms + (b^2)) (prodSum sms + (a*b))) (Sums 0 0 0 0 0) ratings
                             n       = (fromIntegral . M.size) ratings
                             ratings = getMutuallyRatings x y
                             cal     = ((sqrSum1 sums) - ((sum1 sums)^2) / n) * ((sqrSum2 sums) - ((sum2 sums)^2) / n)
                             den     = if cal >= 0 then sqrt cal else 0
 
--- |Generates a list with the calculated similarity score between each elements (cartesian product). The similarity score is calculated using a defined score function
-generateCompleteScoreList :: M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map NamePair Double
-generateCompleteScoreList  elmnts scoreFunc =    M.fromList [(NamePair x y, scoreFunc xis yis) | (x,xis) <- lst, (y,yis) <- lst]
-                                                    where lst = M.toList elmnts
--- |Generates a list with the calculated similarity score between the element with the specified name and all others. The similarity score is calculated using a defined score function
-generateSpecificElementScoreList :: String -> M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map NamePair Double
-generateSpecificElementScoreList name elmnts scoreFunc =  case M.lookup name elmnts of
-                                                            Just itms -> M.fromList [(NamePair name x, scoreFunc itms xis) | (x,xis) <- M.toList elmnts, x /= name]
-                                                            Nothing -> M.empty
+-- |Generates a map with the calculated similarity score between each elements (cartesian product). The similarity score is calculated using a defined score function. The map is sorted ascending by the similarity score.
+generateCompleteScoreList :: M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map Double [NamePair]
+generateCompleteScoreList  elmnts scoreFunc =    M.fromListWith (\newVal oldVal -> union newVal oldVal) [(scoreFunc xis yis, [NamePair x y]) | (x,xis) <- lst, (y,yis) <- lst, x /= y]
+                                                        where lst = M.toList elmnts
+
+-- |Generates a map with the calculated similarity score between the element with the specified name and all others. The similarity score is calculated using a defined score function. The map is sorted ascending by the similarity score.
+generateSpecificElementScoreList :: String -> M.Map String (M.Map String Double) -> (M.Map String Double -> M.Map String Double -> Double) -> M.Map Double [NamePair]
+generateSpecificElementScoreList name elmnts scoreFunc =    case M.lookup name elmnts of
+                                                                Just itms -> M.fromListWith (\newVal oldVal -> union newVal oldVal) [(scoreFunc itms xis, [NamePair name x]) | (x,xis) <- M.toList elmnts, x /= name]
+                                                                Nothing -> M.empty
 
 getSampleElements = M.fromList [
                         ("Lisa Rose", M.fromList [
